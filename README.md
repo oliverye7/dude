@@ -1,6 +1,6 @@
 # Dude
 
-A lightweight Python agent runtime for building conversational AI agents with tool integration.
+A lightweight agent client which utilizes an MCP gateway for general purpose assistance. Easily extensible.
 
 ## What's Included
 
