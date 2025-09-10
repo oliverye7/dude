@@ -2,7 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import json
 import asyncio
 from dotenv import load_dotenv
-from memory import LinearMemory
+from memory import LinearMemory, DAGMemory
 from models import Action, ActionType
 from llm import GeminiProvider
 from gateway_tools import MCPGatewayTools
@@ -17,7 +17,7 @@ class Agent:
     ACTION_MAX_RETRIES = 3
 
     def __init__(self, tools: Dict[str, Any] = None):
-        self.memory = LinearMemory()
+        self.memory = DAGMemory()
         self.llm = GeminiProvider()
         self.gateway_tools = MCPGatewayTools()
         self.session_id = None
@@ -55,6 +55,9 @@ class Agent:
                 return f.read()
         elif action_type == ActionType.PROCESS_AGENT_TOOL_EXECUTION_RESULT:
             with open('prompts/process_tool_execution_result_prompt.md', 'r') as f:
+                return f.read()
+        elif action_type == ActionType.STEP_SUMMARY:
+            with open('prompts/step_summary_prompt.md', 'r') as f:
                 return f.read()
         else:
             raise ValueError(
@@ -239,8 +242,14 @@ class Agent:
 
         return response_text, proposed_next_action, None
 
-    async def run_summarize_step(self) -> Tuple[str, ActionType, Optional[Dict[Any, Any]]]:
-        pass
+    async def run_summarize_step(self) -> str:
+        prompt = self.get_prompt(ActionType.STEP_SUMMARY)
+
+        response = await self.llm.generate(self.memory.get_context(), prompt)
+        response_text, _, _ = self.parse_response(
+            response, ActionType.STEP_SUMMARY)
+
+        return response_text
 
     def get_available_next_actions(self, action_type: ActionType):
         # the following state transitions can occur:
@@ -329,7 +338,8 @@ class Agent:
                 break
 
         # print(f"\nRunning summarize step...")
-        await self.run_summarize_step()
+        summary = await self.run_summarize_step()
+        self.memory.add_action(summary, ActionType.STEP_SUMMARY)
         print(f"Step completed!\n")
         print(f"{'='*50}")
 

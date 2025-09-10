@@ -15,6 +15,8 @@ class ActionType(Enum):
     PROCESS_AGENT_TOOL_EXECUTION_RESULT = "PROCESS_AGENT_TOOL_EXECUTION_RESULT"
     AGENT_RESPONSE = "AGENT_RESPONSE"
     AWAIT_USER_INPUT = "AWAIT_USER_INPUT"
+    # only used internally. step summaries conceptually are easy ways to traverse a compressed version of individual actions
+    STEP_SUMMARY = "STEP_SUMMARY"
     DEFAULT = "DEFAULT"
 
 
