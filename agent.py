@@ -4,7 +4,7 @@ import asyncio
 from dotenv import load_dotenv
 from memory import LinearMemory, DAGMemory
 from models import Action, ActionType
-from llm import GeminiProvider
+from llm import GeminiProvider, OpenAIProvider
 from gateway_tools import MCPGatewayTools
 
 # Load environment variables from .env file
@@ -18,7 +18,7 @@ class Agent:
 
     def __init__(self, tools: Dict[str, Any] = None):
         self.memory = DAGMemory()
-        self.llm = GeminiProvider()
+        self.llm = OpenAIProvider()
         self.gateway_tools = MCPGatewayTools()
         self.session_id = None
 
@@ -42,22 +42,22 @@ class Agent:
 
     def get_prompt(self, action_type: ActionType):
         if action_type == ActionType.PROCESS_USER_INPUT:
-            with open('prompts/process_user_input_prompt.md', 'r') as f:
+            with open('prompts/coding/process_user_input_prompt.md', 'r') as f:
                 return f.read()
         elif action_type == ActionType.AGENT_RESPONSE:
-            with open('prompts/agent_response_prompt.md', 'r') as f:
+            with open('prompts/coding/agent_response_prompt.md', 'r') as f:
                 return f.read()
         elif action_type == ActionType.AGENT_PLANNING:
-            with open('prompts/agent_planning_prompt.md', 'r') as f:
+            with open('prompts/coding/agent_planning_prompt.md', 'r') as f:
                 return f.read()
         elif action_type == ActionType.PROCESS_AGENT_TOOL_SEARCH_RESULT:
-            with open('prompts/process_tool_search_result_prompt.md', 'r') as f:
+            with open('prompts/coding/process_tool_search_result_prompt.md', 'r') as f:
                 return f.read()
         elif action_type == ActionType.PROCESS_AGENT_TOOL_EXECUTION_RESULT:
-            with open('prompts/process_tool_execution_result_prompt.md', 'r') as f:
+            with open('prompts/coding/process_tool_execution_result_prompt.md', 'r') as f:
                 return f.read()
         elif action_type == ActionType.STEP_SUMMARY:
-            with open('prompts/step_summary_prompt.md', 'r') as f:
+            with open('prompts/coding/step_summary_prompt.md', 'r') as f:
                 return f.read()
         else:
             raise ValueError(
@@ -83,7 +83,7 @@ class Agent:
                     f"Response does not contain 'response' field: {response}")
 
             # For AGENT_RESPONSE action type, don't expect a next_action field
-            if action_type == ActionType.AGENT_RESPONSE:
+            if action_type == ActionType.AGENT_RESPONSE or action_type == ActionType.STEP_SUMMARY:
                 return response_text, ActionType.AWAIT_USER_INPUT, None
 
             next_action = response_data.get("next_action")
@@ -267,7 +267,7 @@ class Agent:
         elif action_type == ActionType.PROCESS_AGENT_TOOL_SEARCH_RESULT:
             return [ActionType.AGENT_PLANNING, ActionType.AGENT_TOOL_EXECUTION, ActionType.AGENT_RESPONSE]
         elif action_type == ActionType.PROCESS_AGENT_TOOL_EXECUTION_RESULT:
-            return [ActionType.AGENT_PLANNING, ActionType.AGENT_RESPONSE]
+            return [ActionType.AGENT_PLANNING, ActionType.AGENT_RESPONSE, ActionType.AGENT_TOOL_EXECUTION]
         elif action_type == ActionType.AGENT_RESPONSE:
             return [ActionType.PROCESS_USER_INPUT, ActionType.AWAIT_USER_INPUT]
         elif action_type == ActionType.AWAIT_USER_INPUT:
@@ -339,7 +339,7 @@ class Agent:
 
         # print(f"\nRunning summarize step...")
         summary = await self.run_summarize_step()
-        self.memory.add_action(summary, ActionType.STEP_SUMMARY)
+        await self.memory.add_action(summary, ActionType.STEP_SUMMARY)
         print(f"Step completed!\n")
         print(f"{'='*50}")
 

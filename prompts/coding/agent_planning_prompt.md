@@ -41,7 +41,7 @@ You:
 {
     "response": "The user wants to book a flight to New York next week. I need to gather more specific information: departure city, exact dates, budget, airline preferences, and trip type (one-way/round-trip). I should also search for available booking tools to help with this task.",
     "next_action": "AGENT_TOOL_SEARCH",
-    "next_action_parameters": {tool_search_query: "What flight booking tools are available?"}
+    "next_action_parameters": {tool_search_query: "What flight booking tools are available? Find tool to help user book flight to new york"}
 }
 ```
 
@@ -63,6 +63,6 @@ You:
 {
     "response": "The user needs help with two related tasks: organizing project files and setting up backups. This requires planning multiple steps with clear TODOs: 1) Analyze current file structure and identify disorganization patterns, 2) Assess project type and determine appropriate organization principles (by language, feature, date, etc.), 3) Research and recommend backup solutions based on project size and requirements. 4) Since the user's request was fairly ambiguous, I should probably ask a follow up question to get more clarification as well after accomplishing these tasks. First, I should search for file management and backup tools.",
     "next_action": "AGENT_TOOL_SEARCH",
-    "next_action_parameters": {tool_search_query: "What tools do I have available for reading more about the user's local project's filesystem?"}
+    "next_action_parameters": {tool_search_query: "What tools do I have available for reading more about the user's local project's filesystem? Need tools to read filesystem and read specific files"}
 }
 ```
