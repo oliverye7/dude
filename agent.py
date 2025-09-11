@@ -1,9 +1,11 @@
+import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import json
 import asyncio
+import uuid
 from dotenv import load_dotenv
 from memory import LinearMemory, DAGMemory
-from models import Action, ActionType
+from models import Action, ActionType, TodoMemory
 from llm import GeminiProvider, OpenAIProvider
 from gateway_tools import MCPGatewayTools
 
@@ -11,57 +13,54 @@ from gateway_tools import MCPGatewayTools
 load_dotenv()
 
 
-class Agent:
+class CoreAgent:
     """Lightweight linear agent runtime"""
     MAX_ACTIONS = 10
     ACTION_MAX_RETRIES = 3
 
-    def __init__(self, tools: Dict[str, Any] = None):
+    def __init__(self, llm=None):
         self.memory = DAGMemory()
-        self.llm = OpenAIProvider()
+        self.llm = llm or OpenAIProvider()
         self.gateway_tools = MCPGatewayTools()
         self.session_id = None
-
-    async def execute_tool():
-        pass
-
-    async def get_relevant_tools():
-        pass
-
-    async def think():
-        pass
+        self.is_running = True
 
     async def get_context(self):
         return self.memory.get_context()
 
-    async def should_stop():
-        pass
-
-    async def clear_memory():
-        pass
+    def get_bash_execute_tool_description(self):
+        """Returns the bash_execute tool description by reading from file"""
+        with open('prompts/coding/bash_execute_tool_description.md', 'r') as f:
+            return f.read()
 
     def get_prompt(self, action_type: ActionType):
+        # Get the bash execute tool description
+        bash_tool_description = self.get_bash_execute_tool_description()
+
         if action_type == ActionType.PROCESS_USER_INPUT:
             with open('prompts/coding/process_user_input_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         elif action_type == ActionType.AGENT_RESPONSE:
             with open('prompts/coding/agent_response_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         elif action_type == ActionType.AGENT_PLANNING:
             with open('prompts/coding/agent_planning_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         elif action_type == ActionType.PROCESS_AGENT_TOOL_SEARCH_RESULT:
             with open('prompts/coding/process_tool_search_result_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         elif action_type == ActionType.PROCESS_AGENT_TOOL_EXECUTION_RESULT:
             with open('prompts/coding/process_tool_execution_result_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         elif action_type == ActionType.STEP_SUMMARY:
             with open('prompts/coding/step_summary_prompt.md', 'r') as f:
-                return f.read()
+                prompt_content = f.read()
         else:
             raise ValueError(
                 f"No prompt available for action type: {action_type}")
+
+        # Inject bash execute tool description at the top of all coding prompts
+        return bash_tool_description + "\n" + prompt_content
 
     def parse_response(self, response: str, action_type: ActionType) -> Tuple[str, ActionType, Optional[Dict[Any, Any]]]:
         # parse the JSON response for the next action
@@ -83,8 +82,12 @@ class Agent:
                     f"Response does not contain 'response' field: {response}")
 
             # For AGENT_RESPONSE action type, don't expect a next_action field
-            if action_type == ActionType.AGENT_RESPONSE or action_type == ActionType.STEP_SUMMARY:
+            if action_type == ActionType.AGENT_RESPONSE:
                 return response_text, ActionType.AWAIT_USER_INPUT, None
+
+            # for memory updates or summarizations, don't expect a next_action field
+            if action_type == ActionType.UPDATE_TODO_LIST or action_type == ActionType.UPDATE_CONVERSATION_STATE or action_type == ActionType.UPDATE_CONVERSATION_COMPRESSION or action_type == ActionType.UPDATE_BRANCH_BACKTRACK_SUMMARY or action_type == ActionType.STEP_SUMMARY:
+                return response_text, action_type, None
 
             next_action = response_data.get("next_action")
             if not next_action:
@@ -197,8 +200,7 @@ class Agent:
 
     async def run_agent_tool_execution_action(self, action_parameters: Optional[Dict[Any, Any]] = None) -> Tuple[str, ActionType, Optional[Dict[Any, Any]]]:
         if not self.gateway_tools.session_id:
-            # panic, we should never be executing a tool without a session ID since we should create when we search for tools
-            raise ValueError("Gateway tools session ID is not set")
+            await self.gateway_tools.create_session()
 
         assert action_parameters is not None, "action_parameters is required for AGENT_TOOL_EXECUTION"
         assert isinstance(
@@ -251,12 +253,27 @@ class Agent:
 
         return response_text
 
+    # this summary that's generated should be added both to the branch point node and also to the leaf node
+    async def generate_branch_backtrack_summary(self, node_id: uuid.UUID, current_context: str):
+        branch_backtrack_summary = await self.memory.get_branch_backtrack_summary(node_id)
+
+        prompt = self.get_prompt(ActionType.UPDATE_BRANCH_BACKTRACK_SUMMARY)
+
+        joined_context = current_context + "\n\n" + "CURRENT BRANCH BACKTRACK SUMMARY: " + \
+            branch_backtrack_summary if branch_backtrack_summary else "NO CURRENT BRANCH BACKTRACK SUMMARY"
+
+        response = await self.llm.generate(joined_context, prompt)
+        response_text, _, _ = self.parse_response(
+            response, ActionType.UPDATE_BRANCH_BACKTRACK_SUMMARY)
+
+        return response_text
+
     def get_available_next_actions(self, action_type: ActionType):
         # the following state transitions can occur:
         # PROCESS_USER_INPUT --> AGENT_PLANNING | AGENT_TOOL_SEARCH | AGENT_TOOL_EXECUTION | AGENT_RESPONSE
         # AGENT_PLANNING --> AGENT_TOOL_SEARCH | AGENT_RESPONSE
-        # AGENT_TOOL_SEARCH --> AGENT_PLANNING | AGENT_TOOL_EXECUTION | AGENT_RESPONSE
-        # AGENT_TOOL_EXECUTION --> AGENT_PLANNING | AGENT_RESPONSE
+        # PROCESS_AGENT_TOOL_SEARCH_RESULT --> AGENT_PLANNING | AGENT_TOOL_EXECUTION | AGENT_RESPONSE
+        # PROCESS_AGENT_TOOL_EXECUTION_RESULT --> AGENT_PLANNING | AGENT_RESPONSE | AGENT_TOOL_EXECUTION
         # AGENT_RESPONSE --> PROCESS_USER_INPUT | AWAIT_USER_INPUT
         # AWAIT_USER_INPUT --> (exits loop, no next actions)
 
@@ -359,9 +376,136 @@ class Agent:
                 break
             await self.memory.add_action(user_input, ActionType.USER_INPUT)
             await self.run_step(user_input)
-        pass
+
+        self.is_running = False
+
+
+class MemoryAgent:
+    """Memory agent that updates the memory based on the context"""
+    CONVERSATION_STATE_UPDATE_INTERVAL = 1
+    TODO_LIST_UPDATE_INTERVAL = 1
+    CONVERSATION_COMPRESSION_UPDATE_INTERVAL = 5
+    ACTION_MAX_RETRIES = 3
+
+    def __init__(self, memory: DAGMemory, core_agent: CoreAgent, llm=None):
+        self.memory = memory
+        self.llm = llm or OpenAIProvider()
+        self.core_agent = core_agent
+
+    def get_prompt(self, action_type: ActionType):
+        if action_type == ActionType.UPDATE_TODO_LIST:
+            with open('prompts/coding/update_todo_list_prompt.md', 'r') as f:
+                prompt_content = f.read()
+        elif action_type == ActionType.UPDATE_CONVERSATION_STATE:
+            with open('prompts/coding/update_conversation_state_prompt.md', 'r') as f:
+                prompt_content = f.read()
+        elif action_type == ActionType.UPDATE_CONVERSATION_COMPRESSION:
+            with open('prompts/coding/update_conversation_compression_prompt.md', 'r') as f:
+                prompt_content = f.read()
+        elif action_type == ActionType.UPDATE_BRANCH_BACKTRACK_SUMMARY:
+            with open('prompts/coding/update_branch_backtrack_summary_prompt.md', 'r') as f:
+                prompt_content = f.read()
+        else:
+            raise ValueError(
+                f"No prompt available for action type: {action_type}")
+
+        # Inject bash execute tool description at the top of all coding prompts
+        return prompt_content
+
+    async def generate_todo_list(self, node_id: uuid.UUID, current_context: str) -> TodoMemory:
+        todo_list = await self.memory.get_todo_list(node_id)
+
+        prompt = self.get_prompt(ActionType.UPDATE_TODO_LIST)
+
+        joined_context = current_context + "\n\n" + "CURRENT TODO LIST: " + \
+            todo_list if todo_list else "NO CURRENT TODO LIST"
+
+        response = await self.llm.generate(joined_context, prompt)
+        response_text, _, _ = self.parse_response(
+            response, ActionType.UPDATE_TODO_LIST)
+
+        return TodoMemory(timestamp=datetime.now(), items=response_text)
+
+    async def generate_conversation_state(self, node_id: uuid.UUID, current_context: str):
+        conversation_state = await self.memory.get_conversation_state(node_id)
+
+        prompt = self.get_prompt(ActionType.UPDATE_CONVERSATION_STATE)
+
+        joined_context = current_context + "\n\n" + "CURRENT CONVERSATION STATE: " + \
+            conversation_state if conversation_state else "NO CURRENT CONVERSATION STATE"
+
+        response = await self.llm.generate(joined_context, prompt)
+        response_text, _, _ = self.parse_response(
+            response, ActionType.UPDATE_CONVERSATION_STATE)
+
+        # expect response text to be converted to a dictionary, retry if err
+        retries = 0
+        while not isinstance(response_text, dict) and retries < self.ACTION_MAX_RETRIES:
+            retries += 1
+            response = await self.llm.generate(joined_context, prompt)
+            response_text, _, _ = self.parse_response(
+                response, ActionType.UPDATE_CONVERSATION_STATE)
+
+        if retries == self.ACTION_MAX_RETRIES:
+            raise ValueError(
+                f"Failed to generate a valid conversation state after {self.ACTION_MAX_RETRIES} retries")
+
+        return response_text
+
+    async def generate_conversation_compression(self, node_id: uuid.UUID, current_context: str):
+        conversation_compression = await self.memory.get_conversation_compression(node_id)
+
+        prompt = self.get_prompt(ActionType.UPDATE_CONVERSATION_COMPRESSION)
+
+        joined_context = current_context + "\n\n" + "CURRENT CONVERSATION COMPRESSION: " + \
+            conversation_compression if conversation_compression else "NO CURRENT CONVERSATION COMPRESSION"
+
+        response = await self.llm.generate(joined_context, prompt)
+        response_text, _, _ = self.parse_response(
+            response, ActionType.UPDATE_CONVERSATION_COMPRESSION)
+
+        return response_text
+
+    async def parse_response(self, response: str, action_type: ActionType):
+        return self.core_agent.parse_response(response, action_type)
+
+    async def _update_todo_list(self, node_id: uuid.UUID, current_context: str):
+        todo_list = await self.generate_todo_list(node_id, current_context)
+        await self.memory.set_todo_list(node_id, todo_list)
+
+    async def _update_conversation_state(self, node_id: uuid.UUID, current_context: str):
+        conversation_state = await self.generate_conversation_state(node_id, current_context)
+        await self.memory.set_conversation_state(node_id, conversation_state)
+
+    async def _update_conversation_compression(self, node_id: uuid.UUID, current_context: str):
+        conversation_compression = await self.generate_conversation_compression(node_id, current_context)
+        await self.memory.set_conversation_compression(node_id, conversation_compression)
+
+    async def run(self):
+        while self.core_agent.is_running:
+            # Update memory at specified intervals using built-in step counter (non-blocking)
+            step_count = self.memory.get_step_count()
+
+            current_action_node = self.memory.get_current_action_node()
+            current_action_node_id = current_action_node.node_id
+            current_context = self.memory.get_context()
+
+            if step_count % self.TODO_LIST_UPDATE_INTERVAL == 0:
+                asyncio.create_task(
+                    self._update_todo_list(current_action_node_id, current_context))
+
+            if step_count % self.CONVERSATION_STATE_UPDATE_INTERVAL == 0:
+                asyncio.create_task(
+                    self._update_conversation_state(current_action_node_id, current_context))
+
+            if step_count % self.CONVERSATION_COMPRESSION_UPDATE_INTERVAL == 0:
+                asyncio.create_task(
+                    self._update_conversation_compression(current_action_node_id, current_context))
+
+            # steps accumulate slowly, so we dont need to tick too fast
+            await asyncio.sleep(5.0)
 
 
 if __name__ == "__main__":
-    agent = Agent()
+    agent = CoreAgent()
     asyncio.run(agent.run())

@@ -3,7 +3,7 @@ import json
 from typing import Dict, List, Optional
 from datetime import datetime
 import uuid
-from models import Action, ActionNode, ActionType
+from models import Action, ActionNode, ActionType, NodeMemory, NodeMemoryEntry, NodeMemoryType, TodoMemory, ConversationStateMemory, BranchBacktrackSummaryMemory, ConversationCompressionMemory
 
 
 class BaseMemory:
@@ -47,6 +47,7 @@ class DAGMemory(BaseMemory):
                          metadata: dict = None, action_parameters: dict = None,
                          tool_search_query: str = None,
                          parent_id: Optional[uuid.UUID] = None,
+                         node_memory: Optional[NodeMemory] = None
                          ) -> Action:
         """Add an action to memory DAG."""
         if parent_id is None:
@@ -80,12 +81,29 @@ class DAGMemory(BaseMemory):
             tool_search_query=tool_search_query
         )
 
-        node = ActionNode(
-            action=action,
-            parent_id=parent_id,
-            children_ids=[],
-            node_id=uuid.uuid4()
-        )
+        node = None
+        if action_type == ActionType.STEP_SUMMARY:
+            node = ActionNode(
+                action=action,
+                parent_id=parent_id,
+                children_ids=[],
+                node_id=uuid.uuid4(),
+                action_node_memory=None,
+                step_summary=action.content,
+                step_boundary=True
+            )
+        else:
+            node = ActionNode(
+                action=action,
+                parent_id=parent_id,
+                children_ids=[],
+                node_id=uuid.uuid4(),
+                action_node_memory=NodeMemory(
+                    node_memory=[node_memory] if node_memory else []),
+                step_boundary=False,
+                step_summary=None
+            )
+
         self.nodes[node.node_id] = node
         if self.root_node_id is None:
             self.root_node_id = node.node_id
@@ -97,12 +115,147 @@ class DAGMemory(BaseMemory):
         self.current_node_id = node.node_id
         return action
 
-    def update_node(self, node_id: uuid.UUID, action: Action) -> Action:
+    def get_step_nodes(self) -> List[ActionNode]:
+        """Get all step nodes in the action DAG"""
+        steps = []
+        for node in self.nodes.values():
+            if node.step_boundary:
+                steps.append(node)
+        return steps
+
+    def get_current_action_node(self) -> ActionNode:
+        """Get the current action node"""
+        if self.current_node_id is None:
+            raise ValueError("Current node id is not set")
+        return self.nodes[self.current_node_id]
+
+    def get_actions_for_step(self, step_id: uuid.UUID) -> List[ActionNode]:
+        """Get all actions for a given step"""
+        if step_id not in self.nodes:
+            raise ValueError(f"Step {step_id} not found")
+        # walk backwards from the step node until previous step boundary or root is reached
+        actions = []
+        current_node = self.nodes[step_id]
+        while current_node:
+            actions.append(current_node)
+            if current_node.parent_id is None:
+                break
+            current_node = self.nodes.get(current_node.parent_id)
+
+        actions.reverse()
+        return actions
+
+    def update_node(self, node_id: uuid.UUID, action: Action, node_memory: Optional[NodeMemory] = None) -> Action:
         """Update a node in the action DAG"""
         if node_id not in self.nodes:
             raise ValueError(f"Node {node_id} not found")
         self.nodes[node_id].action = action
+        if node_memory:
+            self.nodes[node_id].action_node_memory.node_memory.append(
+                node_memory)
         return action
+
+    def set_todo_list(self, node_id: uuid.UUID, todo_list: TodoMemory) -> bool:
+        """Set the todo list for a given node"""
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        current_node_memory = self.nodes[node_id].action_node_memory
+        if not current_node_memory:
+            raise ValueError(f"Node {node_id} has no action node memory")
+        node_memory_entry = NodeMemoryEntry(
+            updated_field=NodeMemoryType.TODO,
+            timestamp=datetime.now(),
+            todo=todo_list,
+            conversation_state=current_node_memory.node_memory[-1].conversation_state,
+            branch_backtrack_summary=current_node_memory.node_memory[-1].branch_backtrack_summary,
+        )
+        current_node_memory.node_memory.append(
+            node_memory_entry)
+        return True
+
+    def set_conversation_compression(self, node_id: uuid.UUID, conversation_compression: ConversationCompressionMemory) -> bool:
+        """Set the conversation compression for a given node"""
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        current_node_memory = self.nodes[node_id].action_node_memory
+        if not current_node_memory:
+            raise ValueError(f"Node {node_id} has no action node memory")
+        node_memory_entry = NodeMemoryEntry(
+            updated_field=NodeMemoryType.CONVERSATION_COMPRESSION,
+            timestamp=datetime.now(),
+            conversation_compression=conversation_compression,
+            todo=current_node_memory.node_memory[-1].todo,
+            conversation_state=current_node_memory.node_memory[-1].conversation_state,
+            branch_backtrack_summary=current_node_memory.node_memory[-1].branch_backtrack_summary,
+        )
+        current_node_memory.node_memory.append(
+            node_memory_entry)
+        return True
+
+    def set_conversation_state(self, node_id: uuid.UUID, conversation_state: ConversationStateMemory) -> bool:
+        """Set the conversation state for a given node"""
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        current_node_memory = self.nodes[node_id].action_node_memory
+        if not current_node_memory:
+            raise ValueError(f"Node {node_id} has no action node memory")
+        node_memory_entry = NodeMemoryEntry(
+            updated_field=NodeMemoryType.CONVERSATION_STATE,
+            timestamp=datetime.now(),
+            conversation_state=conversation_state,
+            todo=current_node_memory.node_memory[-1].todo,
+            branch_backtrack_summary=current_node_memory.node_memory[-1].branch_backtrack_summary,
+        )
+        current_node_memory.node_memory.append(
+            node_memory_entry)
+        return True
+
+    def get_node_memory_history_for_node(self, node_id: uuid.UUID) -> List[NodeMemory]:
+        """Get the node memory history for a given node"""
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        action_node_memory = self.nodes[node_id].action_node_memory
+        if not action_node_memory:
+            raise ValueError(f"Node {node_id} has no action node memory")
+        return action_node_memory
+
+    def get_todo_list(self, node_id: Optional[uuid.UUID] = None) -> Optional[TodoMemory]:
+        """Get the todo list for a given node"""
+        if node_id is None:
+            node_id = self.current_node_id
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        action_node_memory = self.nodes[node_id].action_node_memory
+        if not action_node_memory:
+            raise ValueError(f"Node {node_id} has no action node memory")
+        return action_node_memory.node_memory[-1].todo if action_node_memory.node_memory[-1].todo else None
+
+    def get_conversation_state(self, node_id: Optional[uuid.UUID] = None) -> Optional[ConversationStateMemory]:
+        """Get the conversation state for a given node"""
+        if node_id is None:
+            node_id = self.current_node_id
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        action_node_memory = self.nodes[node_id].action_node_memory
+        return action_node_memory.node_memory[-1].conversation_state if action_node_memory.node_memory[-1].conversation_state else None
+
+    def get_branch_backtrack_summary(self, node_id: Optional[uuid.UUID] = None) -> Optional[BranchBacktrackSummaryMemory]:
+        """Get the branch backtrack summary for a given node"""
+        if node_id is None:
+            node_id = self.current_node_id
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        action_node_memory = self.nodes[node_id].action_node_memory
+        return action_node_memory.node_memory[-1].branch_backtrack_summary if action_node_memory.node_memory[-1].branch_backtrack_summary else None
+
+    def get_current_node_memory(self, node_id: Optional[uuid.UUID] = None) -> Optional[NodeMemory]:
+        """Get the current node memory for a given node"""
+        if node_id is None:
+            node_id = self.current_node_id
+        if node_id not in self.nodes:
+            raise ValueError(f"Node {node_id} not found")
+        action_node_memory = self.nodes[node_id].action_node_memory
+        return action_node_memory.node_memory[-1] if action_node_memory.node_memory[-1] else None
 
     def get_node_by_id(self, node_id: uuid.UUID) -> ActionNode:
         """Get a node by its ID"""
@@ -137,6 +290,7 @@ class DAGMemory(BaseMemory):
                 leaves.append(node.node_id)
         return leaves
 
+    # effectively git checkout
     def set_current_node(self, node_id: uuid.UUID) -> uuid.UUID:
         """Set the current node"""
         if node_id not in self.nodes:
@@ -215,6 +369,27 @@ class DAGMemory(BaseMemory):
         recent_root_node_id = self.get_path_to_root(
             self.current_node_id)[-max_actions]
         return self.get_context_between_nodes(self.current_node_id, recent_root_node_id)
+
+    def get_conversation_length(self) -> int:
+        """Get the length of the conversation"""
+        if self.current_node_id is None:
+            return 0
+        if self.root_node_id is None:
+            return 0
+        # since actions are added sequentially, this is the length of the conversation
+        return self.get_node_by_id(self.current_node_id).action.id
+
+    def get_branch_length(self) -> int:
+        """Get the length of the branch"""
+        if self.current_node_id is None:
+            return 0
+        if self.root_node_id is None:
+            return 0
+        return len(self.get_path_to_root(self.current_node_id))
+
+    def get_step_count(self) -> int:
+        """Get the number of steps in the conversation"""
+        return len(self.get_step_nodes())
 
     def clear(self):
         """Clear all memory"""

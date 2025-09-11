@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 from datetime import datetime
 
@@ -18,6 +18,68 @@ class ActionType(Enum):
     # only used internally. step summaries conceptually are easy ways to traverse a compressed version of individual actions
     STEP_SUMMARY = "STEP_SUMMARY"
     DEFAULT = "DEFAULT"
+    UPDATE_TODO_LIST = "UPDATE_TODO_LIST"
+    UPDATE_CONVERSATION_STATE = "UPDATE_CONVERSATION_STATE"
+    UPDATE_CONVERSATION_COMPRESSION = "UPDATE_CONVERSATION_COMPRESSION"
+    UPDATE_BRANCH_BACKTRACK_SUMMARY = "UPDATE_BRANCH_BACKTRACK_SUMMARY"
+    CONVERSATION_COMPRESSION = "CONVERSATION_COMPRESSION"
+
+
+@dataclass
+class NodeMemoryType(Enum):
+    CONVERSATION_STATE = "CONVERSATION_STATE"
+    BRANCH_BACKTRACK_SUMMARY = "BRANCH_BACKTRACK_SUMMARY"
+    TODO = "TODO"
+
+
+@dataclass
+class TodoStatus(Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+@dataclass
+class TodoItem:
+    timestamp: datetime
+    content: str
+    status: TodoStatus
+
+
+@dataclass
+class TodoMemory:
+    timestamp: datetime
+    items: List[TodoItem]
+
+
+@dataclass
+class ConversationStateMemory:
+    timestamp: datetime
+    content: Dict[str, Any]
+
+
+@dataclass
+class BranchBacktrackSummaryMemory:
+    timestamp: datetime
+    # where the backtrack moved the active node to
+    backtrack_branch_point_node_id: uuid.UUID
+    backtrack_from_node_id: uuid.UUID  # where the backtrack was triggered from
+    content: str
+
+
+@dataclass
+class NodeMemoryEntry:
+    updated_field: NodeMemoryType
+    timestamp: datetime
+    conversation_state: Optional[ConversationStateMemory] = None
+    branch_backtrack_summary: Optional[BranchBacktrackSummaryMemory] = None
+    todo: Optional[TodoMemory] = None
+
+
+@dataclass
+class NodeMemory:
+    node_memory: List[NodeMemoryEntry]
 
 
 @dataclass
@@ -39,6 +101,9 @@ class Action:
 class ActionNode:
     """ Represents a node in the action DAG """
     action: Action
-    parent_id: Optional[str] = None
+    parent_id: Optional[uuid.UUID] = None
     node_id: Optional[uuid.UUID] = None
-    children_ids: Optional[List[str]] = None
+    children_ids: Optional[List[uuid.UUID]] = None
+    action_node_memory: Optional[NodeMemory] = None
+    step_boundary: bool = False
+    step_summary: Optional[str] = None  # only on step boundaries
